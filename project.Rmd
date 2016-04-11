@@ -1,0 +1,100 @@
+---
+title: "Prediction Assignment Writeup"
+output: html_document
+date: "April 11, 2016"
+---
+
+## 1. Introduction  
+This report describes a classification model which predicts with an approximate **Accuracy of 100%** the way that someone executes a Dumbbell Biceps Curl exercise. Six young health participants were asked to perform one set of 10 repetitions in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Using data from wearable accelerometers (Jawbone Up, Nike FuelBand, and Fitbit), the classifier predicts how the participant executes the aforementioned exercise.
+
+## 2. Pre process
+#### 2.1. Required libraries
+```{r message=FALSE}
+library(caret)
+library(FSelector) # for feature selection
+library(doParallel) # for parallel execution of train() function
+Sys.setlocale("LC_TIME", "en_US.UTF-8")
+```
+
+#### 2.2. Training data loading / filtering / transformation
+Every feature that contained at least one NA values was filtered out. Also patricipants user names and samples ids were excluded.
+```{r}
+train <- read.csv("pml-training.csv", header = TRUE, na.strings = c("NA", "#DIV/0!"))
+classe <- train$classe
+train <- train[, apply(train, 2, function(x) !any(is.na(x)))]
+train$classe <- NULL
+train$X <- NULL
+train$user_name <- NULL
+```
+
+"Day and time" feature had a complex format (i.e. "05/12/2011 11:23"). So, it was splitted into day name (i.e. "Monday") and time (i.e "11:23") in order to provide potentially more information during the classification algorithm construction.
+```{r}
+day_conversion = function(column) {
+  output <- sapply(1:length(column), function(i) { 
+    weekdays(as.Date(column[[i]][1]))
+  })
+  output
+}
+time_conversion = function(column) {
+  output <- sapply(1:length(column), function(i) {
+    column[[i]][2]
+  })
+  output
+}
+
+cvtd_timestamp_days <- day_conversion(strsplit(as.vector(train$cvtd_timestamp), " "))
+cvtd_timestamp_time <- time_conversion(strsplit(as.vector(train$cvtd_timestamp), " "))
+train$cvtd_timestamp <- NULL
+train$cvtd_timestamp_days  <- cvtd_timestamp_days
+train$cvtd_timestamp_time  <- cvtd_timestamp_time
+```
+
+#### 2.3 Feature Selection
+Data dimensionality reduction was performed with a simple feature selection process. Using **'FSelector' library** features with **Gain Ration greater than 0.05** were choosed for the machine learning procedure.
+```{r}
+best.features <- gain.ratio(classe ~ . , data=train)
+best.features <- rownames(best.features)[which(best.features[,1]>0.05)]
+train <- train[, best.features]
+```
+
+
+## 3. Classification
+#### 3.1. Model Construction
+A **10-fold Cross Validation** was performed, using **Random Forest** algorithm as learner. Random Forest was perfered because it is an ensemble method for classification, therefore it provides the interpretability of decision trees (in fact, it is more complex than single tree) and the efficiency of bootstrap aggregating. Training data was splitted to **train (70% of samples)** and **test (30% of samples)** parts, while the train() function was executed in parallel with **'doParallel' library**.
+```{r cache=TRUE}
+train$classe <- classe
+set.seed(1234)
+inTrain <- createDataPartition(y=train$classe, p=0.7, list=FALSE)
+train.train <- train[inTrain,]
+train.test <- train[-inTrain,]
+
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+set.seed(1234)
+control = trainControl(method="cv", number=5, allowParallel=TRUE, verbose=TRUE)
+model <- train(classe ~ . , data=train.train, method="rf", 
+               ntree= 200, trainControl= control, verbose=FALSE)
+```
+
+#### 3.2. Model Performance and Confusion Matrix
+Machine learning process properties and Accuracy are displayed below, while the Confusion Matrix indicates the Specificity and Sensitivity of each class (A, B, C, D and E)
+```{r message=FALSE}
+model
+predictions.train <- predict(model, train.test)
+confusionMatrix(train.test$classe, predictions.train)
+```
+
+## 4. Prediction
+Excercise manner was predicted for 20 unlabeled samples, based on the above classification model.
+```{r}
+test <- read.csv("pml-testing.csv", header = TRUE, na.strings = c("NA", "#DIV/0!"))
+cvtd_timestamp_days <- day_conversion(strsplit(as.vector(test$cvtd_timestamp), " "))
+cvtd_timestamp_time <- time_conversion(strsplit(as.vector(test$cvtd_timestamp), " "))
+test$cvtd_timestamp <- NULL
+test$cvtd_timestamp_days  <- cvtd_timestamp_days
+test$cvtd_timestamp_time  <- cvtd_timestamp_time
+test <- test[,which(names(test) %in% names(train))]
+
+predictions.test <- predict(model, test)
+predictions.test
+```
